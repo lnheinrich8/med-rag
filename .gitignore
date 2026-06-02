@@ -1,0 +1,82 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+.installed.cfg
+
+# ---- Virtual environments / package managers ----
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# uv
+.uv/
+uv.lock          # comment out if you decide to commit the lockfile for reproducibility
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+*.secret
+
+# ---- Test / lint / type-check caches ----
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+
+# ---- ML model & HF caches (large; should never be committed) ----
+.cache/
+hf_cache/
+models/
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# ---- Project data (medical PDFs / corpus / generated artifacts) ----
+data/raw/
+data/processed/
+data/interim/
+!data/raw/.gitkeep
+!data/**/.gitkeep
+
+# ---- Eval outputs / reports / experiment artifacts ----
+reports/
+outputs/
+runs/
+*.log
+
+# ---- Postgres / Docker volumes ----
+pgdata/
+postgres-data/
+*.dump
+*.sql.bak
+
+# ---- IDE / editor ----
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
