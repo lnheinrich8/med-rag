@@ -1,0 +1,30 @@
+# Default experiment configuration.
+# Each field maps to a model in src/medrag/config.py (ExperimentConfig).
+# Copy this file into configs/experiments/ and tweak to define an ablation.
+name: default
+
+chunk:
+  strategy: recursive      # fixed | recursive | section | semantic
+  chunk_size: 512          # target tokens per chunk
+  chunk_overlap: 64
+
+embed:
+  model: BAAI/bge-base-en-v1.5
+  dim: 768                 # must match VECTOR(768) in migrations/001_init.sql
+  normalize: true
+
+retrieval:
+  mode: dense              # dense | sparse | hybrid
+  top_k: 20                # candidates before reranking
+  rrf_k: 60                # reciprocal-rank-fusion constant (hybrid only)
+
+rerank:
+  enabled: false
+  model: BAAI/bge-reranker-base
+  top_n: 5                 # kept after reranking, fed to the LLM
+
+generation:
+  model_path: ""           # set in Step 3 (GGUF path or HF repo id)
+  max_tokens: 512
+  temperature: 0.1
+  context_chunks: 5

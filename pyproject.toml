@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "medrag"
+version = "0.1.0"
+description = "Local RAG CLI over a Type 2 Diabetes corpus, with evaluation as a first-class feature."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3.6",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+    "pyyaml>=6",
+    "pymupdf4llm>=0.0.17",
+    "numpy>=1.26",
+]
+
+# Heavy ML deps are kept out of the core install so the CLI/DB layer stays fast
+# to set up. Install per build step:
+#   Step 2/5 (embeddings + reranker):  pip install -e ".[embed]"
+#   Step 3   (local LLM):              pip install -e ".[llm]"
+[project.optional-dependencies]
+embed = [
+    "sentence-transformers>=3.0",
+    "torch>=2.2",
+]
+llm = [
+    "llama-cpp-python>=0.2.80",
+    "huggingface-hub>=0.23",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+rag = "src.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
