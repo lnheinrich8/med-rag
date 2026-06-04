@@ -68,16 +68,74 @@ def ingest(
     config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
 ) -> None:
     """Parse → chunk → embed → upsert into Postgres. (Step 2)"""
-    console.print(_NOT_IMPLEMENTED)
+    from rich.progress import track
+
+    from .config import ExperimentConfig
+    from .db import connect
+    from .embed.embedder import Embedder
+    from .ingest.chunkers import chunk_document
+    from .ingest.loaders import load_corpus, load_pdf
+    from .store.pgvector_store import store_document
+
+    cfg = ExperimentConfig.from_yaml(config)
+    target = path or settings.data_dir
+    docs = [load_pdf(target)] if target.is_file() else list(load_corpus(target))
+    if not docs:
+        console.print(f"[yellow]No PDFs found under[/] {target}")
+        raise typer.Exit()
+
+    embedder = Embedder(cfg.embed)
+    stored = skipped = total_chunks = 0
+    with connect() as conn:
+        for doc in track(docs, description="Ingesting"):
+            chunks = chunk_document(doc, cfg.chunk)
+            vectors = embedder.embed_passages([c.content for c in chunks])
+            for c, v in zip(chunks, vectors):
+                c.embedding = v
+            if store_document(conn, doc, chunks):
+                stored += 1
+                total_chunks += len(chunks)
+            else:
+                skipped += 1
+        conn.commit()
+
+    console.print(
+        f"[green]Ingested[/] {stored} document(s), {total_chunks} chunk(s); "
+        f"{skipped} unchanged/skipped."
+    )
 
 
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Retrieval query."),
     config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
+    k: Optional[int] = typer.Option(None, "--k", help="Override top_k from config."),
 ) -> None:
     """Retrieval only: show top chunks with scores. (Step 2)"""
-    console.print(_NOT_IMPLEMENTED)
+    from .config import ExperimentConfig
+    from .retrieve.dense import dense_search
+
+    cfg = ExperimentConfig.from_yaml(config)
+    if k is not None:
+        cfg.retrieval.top_k = k
+
+    hits = dense_search(query, cfg.embed, cfg.retrieval)
+    if not hits:
+        console.print("[yellow]No results.[/] Did you run `rag ingest` first?")
+        raise typer.Exit()
+
+    table = Table(title=f"Top {len(hits)} for: {query}", show_lines=True)
+    table.add_column("#", justify="right", style="cyan", no_wrap=True)
+    table.add_column("score", justify="right")
+    table.add_column("source")
+    table.add_column("pages", justify="right")
+    table.add_column("chunk")
+    for i, h in enumerate(hits, 1):
+        src = Path(h.source_path).name
+        pages = f"{h.page_start}-{h.page_end}" if h.page_start else "?"
+        snippet = " ".join(h.content.split())[:160]
+        table.add_row(str(i), f"{h.score:.3f}", src, pages, snippet)
+    console.print(table)
 
 
 @app.command()
