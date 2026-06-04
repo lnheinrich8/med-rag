@@ -70,11 +70,15 @@ class RerankConfig(BaseModel):
 
 
 class GenerationConfig(BaseModel):
-    # Empty until Step 3. A GGUF path on disk or an HF repo id.
-    model_path: str = ""
-    max_tokens: int = 512
+    # Ollama model name (created from the local GGUF via a Modelfile; see README).
+    model: str = "medrag-qwen"
+    ollama_host: str = "http://localhost:11434"
+    n_ctx: int = 4096  # context window (Ollama num_ctx); VRAM grows with this
+    max_tokens: int = 512  # max generated tokens (Ollama num_predict)
     temperature: float = 0.1
-    context_chunks: int = 5
+    top_p: float = 0.9
+    context_chunks: int = 5  # how many retrieved chunks go into the prompt
+    keep_alive: str = "5m"  # how long Ollama keeps the model resident after a call
 
 
 class ExperimentConfig(BaseModel):

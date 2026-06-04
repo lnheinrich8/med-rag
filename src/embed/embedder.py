@@ -13,7 +13,7 @@ The model is loaded lazily (first encode) so importing this module stays cheap.
 
 from __future__ import annotations
 
-from functools import cached_property
+from functools import cached_property, lru_cache
 
 from ..config import EmbedConfig, settings
 
@@ -32,6 +32,20 @@ def _resolve_device(device: str) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+@lru_cache(maxsize=4)
+def _load_model(model_name: str, device: str):
+    """Load (and cache) one SentenceTransformer per (model, device).
+
+    Caching is process-wide and deliberate: callers construct a fresh ``Embedder``
+    per query (e.g. ``dense_search``), so without this the eval loop would reload
+    the model onto the GPU once *per question* and exhaust VRAM. Keyed on the
+    plain string args so the cache actually hits.
+    """
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name, device=device)
+
+
 class Embedder:
     """Lazily-loaded sentence-transformers model with query/passage asymmetry."""
 
@@ -40,10 +54,7 @@ class Embedder:
 
     @cached_property
     def _model(self):
-        from sentence_transformers import SentenceTransformer
-
-        device = _resolve_device(settings.device)
-        return SentenceTransformer(self.cfg.model, device=device)
+        return _load_model(self.cfg.model, _resolve_device(settings.device))
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
         """Embed chunk texts for storage (no instruction prefix)."""

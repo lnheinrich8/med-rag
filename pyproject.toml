@@ -31,7 +31,7 @@ embed = [
     "torch>=2.2",
 ]
 llm = [
-    "llama-cpp-python>=0.2.80",
+    "ollama>=0.3",
     "huggingface-hub>=0.23",
 ]
 dev = [

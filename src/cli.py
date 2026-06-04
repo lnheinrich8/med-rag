@@ -11,6 +11,7 @@ from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
@@ -113,13 +114,13 @@ def search(
 ) -> None:
     """Retrieval only: show top chunks with scores. (Step 2)"""
     from .config import ExperimentConfig
-    from .retrieve.dense import dense_search
+    from .retrieve.search import retrieve
 
     cfg = ExperimentConfig.from_yaml(config)
     if k is not None:
         cfg.retrieval.top_k = k
 
-    hits = dense_search(query, cfg.embed, cfg.retrieval)
+    hits = retrieve(query, cfg)
     if not hits:
         console.print("[yellow]No results.[/] Did you run `rag ingest` first?")
         raise typer.Exit()
@@ -142,17 +143,136 @@ def search(
 def query(
     question: str = typer.Argument(..., help="Question to answer with citations."),
     config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
+    show_context: bool = typer.Option(
+        False, "--show-context", help="Also print the retrieved chunks."
+    ),
 ) -> None:
     """Full RAG: retrieve + generate a cited answer. (Step 3)"""
-    console.print(_NOT_IMPLEMENTED)
+    from .config import ExperimentConfig
+    from .generate.answer import answer_question
+
+    cfg = ExperimentConfig.from_yaml(config)
+    with console.status("Retrieving + generating…"):
+        ans = answer_question(question, cfg)
+
+    console.print(Panel(ans.text, title="Answer", title_align="left", border_style="green"))
+
+    if ans.citations:
+        table = Table(title="Sources", show_header=True, title_justify="left")
+        table.add_column("[n]", justify="right", style="cyan", no_wrap=True)
+        table.add_column("source")
+        for c in ans.citations:
+            table.add_row(f"[{c.marker}]", c.label())
+        console.print(table)
+    else:
+        console.print("[yellow]No sources cited.[/]")
+
+    if show_context:
+        for i, h in enumerate(ans.contexts, 1):
+            console.print(f"[dim][{i}][/] [cyan]{Path(h.source_path).name}[/] ({h.score:.3f})")
+            console.print(" ".join(h.content.split())[:300])
+
+    console.print(
+        f"[dim]retrieval {ans.retrieval_s * 1000:.0f}ms · "
+        f"generation {ans.generation_s:.1f}s · {ans.completion_tokens} tokens[/]"
+    )
+
+
+_DEFAULT_GOLD = Path("data/gold/diabetes_qa.jsonl")
+
+
+@app.command("eval-gen")
+def eval_gen(
+    config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
+    n: int = typer.Option(50, "--n", "-n", help="Number of draft questions to generate."),
+    out: Path = typer.Option(
+        Path("data/gold/diabetes_qa.draft.jsonl"), "--out", "-o", help="Draft JSONL path."
+    ),
+    min_chars: int = typer.Option(400, "--min-chars", help="Skip chunks shorter than this."),
+) -> None:
+    """Draft a gold Q&A set from the corpus for hand-verification. (Step 4)"""
+    from .config import ExperimentConfig
+    from .eval.dataset import save_gold
+    from .eval.generate_gold import generate_gold
+
+    cfg = ExperimentConfig.from_yaml(config)
+    with console.status(f"Drafting up to {n} questions with {cfg.generation.model}…"):
+        drafts = generate_gold(cfg.generation, n=n, min_chars=min_chars)
+
+    if not drafts:
+        console.print("[yellow]No drafts produced.[/] Did you run `rag ingest` first?")
+        raise typer.Exit(1)
+
+    save_gold(out, drafts)
+    console.print(
+        f"[green]Drafted[/] {len(drafts)} question(s) → {out}\n"
+        "[dim]Next: review each line, fix the answer/relevant span, set "
+        '"verified": true, and save as data/gold/diabetes_qa.jsonl.[/]'
+    )
 
 
 @app.command("eval")
 def eval_(
     config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
+    gold: Path = typer.Option(_DEFAULT_GOLD, "--gold", "-g", help="Gold JSONL path."),
+    no_generate: bool = typer.Option(
+        False, "--no-generate", help="Retrieval metrics only (skip the LLM)."
+    ),
+    no_judge: bool = typer.Option(
+        False, "--no-judge", help="Generate answers but skip LLM-as-judge scoring."
+    ),
+    verified_only: bool = typer.Option(
+        False, "--verified-only", help="Score only questions marked verified=true."
+    ),
 ) -> None:
-    """Run the evaluation suite and emit a report. (Step 4)"""
-    console.print(_NOT_IMPLEMENTED)
+    """Run the evaluation suite over the gold set and emit a report. (Step 4)"""
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+
+    from .config import ExperimentConfig
+    from .eval.dataset import load_gold
+    from .eval.report import build_table, save_report, summarize
+    from .eval.runner import run_eval
+
+    if not gold.exists():
+        console.print(
+            f"[red]Gold set not found:[/] {gold}\n"
+            "Generate a draft with [cyan]rag eval-gen[/], verify it, then rerun."
+        )
+        raise typer.Exit(1)
+
+    cfg = ExperimentConfig.from_yaml(config)
+    questions = load_gold(gold, verified_only=verified_only)
+    if not questions:
+        scope = "verified " if verified_only else ""
+        console.print(f"[yellow]No {scope}questions in[/] {gold}.")
+        raise typer.Exit(1)
+
+    generate = not no_generate
+    judge = generate and not no_judge
+    console.print(
+        f"Evaluating [cyan]{cfg.name}[/] over {len(questions)} question(s) "
+        f"(generate={generate}, judge={judge})…"
+    )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TextColumn("{task.completed}/{task.total}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Running", total=len(questions))
+        run = run_eval(
+            questions,
+            cfg,
+            generate=generate,
+            judge=judge,
+            on_result=lambda _r: progress.advance(task),
+        )
+
+    summary = summarize(run)
+    console.print(build_table(summary))
+    json_path, md_path = save_report(run, summary, settings.reports_dir)
+    console.print(f"[green]Saved[/] {json_path}\n[green]Saved[/] {md_path}")
 
 
 @app.command()

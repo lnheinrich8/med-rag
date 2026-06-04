@@ -1,0 +1,13 @@
+# Registers the locally-downloaded Qwen2.5 GGUF as an Ollama model named
+# "medrag-qwen" (referenced by generation.model in configs/*.yaml).
+#
+#   ollama create medrag-qwen -f Modelfile
+#
+# Ollama imports the GGUF into its own store, so no re-download is needed.
+FROM ./models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
+
+# Match the app's defaults; per-request options (num_ctx, temperature, …) sent
+# by the CLI still override these.
+PARAMETER num_ctx 4096
+PARAMETER temperature 0.1
+PARAMETER top_p 0.9
