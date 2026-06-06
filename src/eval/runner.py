@@ -45,6 +45,8 @@ class QuestionResult:
     # judging (only when judge=True and the answer wasn't an abstention)
     faithfulness: float | None = None
     correctness: float | None = None
+    # set if generation/judging raised even after retries (run still continues)
+    error: str | None = None
 
 
 @dataclass
@@ -85,22 +87,28 @@ def run_question(
     if not generate:
         return result
 
-    contexts = select_contexts(hits, cfg)
-    ans = generate_answer(gold.question, contexts, cfg, retrieval_s)
-    result.generated = True
-    result.answer_text = ans.text
-    result.abstained = is_abstention(ans.text)
-    result.generation_s = ans.generation_s
-    result.completion_tokens = ans.completion_tokens
-    result.n_citations = len(ans.citations)
+    # Generation + judging hit the LLM, which can fail even after retries. Catch
+    # per question so one failure marks just that row (error) instead of aborting
+    # a long multi-config run; the report counts errors and excludes them.
+    try:
+        contexts = select_contexts(hits, cfg)
+        ans = generate_answer(gold.question, contexts, cfg, retrieval_s)
+        result.generated = True
+        result.answer_text = ans.text
+        result.abstained = is_abstention(ans.text)
+        result.generation_s = ans.generation_s
+        result.completion_tokens = ans.completion_tokens
+        result.n_citations = len(ans.citations)
 
-    # An abstention is trivially "faithful" and trivially not "correct"; judging
-    # it would skew both means, so we skip it and report the abstention rate.
-    if judge and not result.abstained:
-        result.faithfulness = judge_faithfulness(ans.text, contexts, cfg.generation).score
-        result.correctness = judge_correctness(
-            gold.question, ans.text, gold.reference_answer, cfg.generation
-        ).score
+        # An abstention is trivially "faithful" and trivially not "correct"; judging
+        # it would skew both means, so we skip it and report the abstention rate.
+        if judge and not result.abstained:
+            result.faithfulness = judge_faithfulness(ans.text, contexts, cfg.generation).score
+            result.correctness = judge_correctness(
+                gold.question, ans.text, gold.reference_answer, cfg.generation
+            ).score
+    except Exception as exc:  # noqa: BLE001 - record and continue the run
+        result.error = f"{type(exc).__name__}: {exc}"
     return result
 
 

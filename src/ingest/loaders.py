@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ..models import Document
+from .clean import clean_text
 
 # data/raw subdirectory name -> source_type label stored in the documents table.
 _DIR_TO_TYPE = {
@@ -37,8 +38,13 @@ def _section_number_from_name(path: Path) -> str | None:
     return m.group(1) if m else None
 
 
-def load_pdf(path: Path) -> Document:
-    """Extract a single PDF into a Document (one markdown string per page)."""
+def load_pdf(path: Path, clean: bool = True) -> Document:
+    """Extract a single PDF into a Document (one markdown string per page).
+
+    When ``clean`` is set, recurring header/footer boilerplate is stripped from
+    each page before it's stored — done per-page so the char-offset->page mapping
+    the chunker relies on stays consistent with the cleaned text.
+    """
     import pymupdf4llm
 
     # pymupdf4llm >=1.27 defaults to a layout engine that invokes Tesseract OCR;
@@ -49,6 +55,8 @@ def load_pdf(path: Path) -> Document:
     page_dicts = pymupdf4llm.to_markdown(str(path), page_chunks=True)
 
     pages = [pd["text"] for pd in page_dicts]
+    if clean:
+        pages = [clean_text(p) for p in pages]
 
     meta = page_dicts[0].get("metadata", {}) if page_dicts else {}
     title = (meta.get("title") or "").strip() or None
@@ -62,7 +70,7 @@ def load_pdf(path: Path) -> Document:
     )
 
 
-def load_corpus(root: Path) -> Iterator[Document]:
+def load_corpus(root: Path, clean: bool = True) -> Iterator[Document]:
     """Yield a Document for every *.pdf under `root`, recursively and sorted."""
     for pdf in sorted(root.rglob("*.pdf")):
-        yield load_pdf(pdf)
+        yield load_pdf(pdf, clean=clean)

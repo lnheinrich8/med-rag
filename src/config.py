@@ -49,6 +49,7 @@ class ChunkConfig(BaseModel):
     strategy: Literal["fixed", "recursive", "section", "semantic"] = "recursive"
     chunk_size: int = 512  # target tokens per chunk
     chunk_overlap: int = 64
+    clean_boilerplate: bool = True  # strip recurring PDF header/footer noise at load
 
 
 class EmbedConfig(BaseModel):

@@ -25,11 +25,13 @@ from src.eval.metrics import (
 
 @dataclass
 class FakeHit:
-    """Stand-in for retrieve.dense.SearchHit — only the fields matching reads."""
+    """Stand-in for retrieve.dense.SearchHit — only the fields the code reads."""
 
     source_path: str
     page_start: int | None = None
     page_end: int | None = None
+    chunk_id: int = 0  # used by RRF fusion
+    score: float = 0.0  # RRF/rerank write the fused/cross-encoder score here
 
 
 # --------------------------------------------------------------------------- #
@@ -146,6 +148,31 @@ def test_percentile():
 # --------------------------------------------------------------------------- #
 
 
+def test_rrf_fuse_rewards_agreement_and_dedupes():
+    from src.retrieve.hybrid import rrf_fuse
+
+    def h(cid):
+        return FakeHit(f"/x/doc{cid}.pdf", chunk_id=cid)
+
+    # chunk 2 is rank-1 in sparse and also present in dense; chunk 1 is rank-1
+    # in dense only. A chunk seen in BOTH legs should beat one seen in just one.
+    dense = [h(1), h(2)]
+    sparse = [h(2)]
+    fused = rrf_fuse([dense, sparse], rrf_k=60, top_k=10)
+
+    assert sorted(hh.chunk_id for hh in fused) == [1, 2]  # deduped
+    assert fused[0].chunk_id == 2  # appears in both legs -> wins
+    # fused score = dense rank 2 + sparse rank 1
+    assert abs(fused[0].score - (1 / (60 + 2) + 1 / (60 + 1))) < 1e-12
+
+
+def test_rrf_fuse_truncates_to_top_k():
+    from src.retrieve.hybrid import rrf_fuse
+
+    ranking = [FakeHit(f"/x/{i}.pdf", chunk_id=i) for i in range(10)]
+    assert len(rrf_fuse([ranking], rrf_k=60, top_k=5)) == 5
+
+
 def test_select_contexts_honors_rerank_topn():
     from src.config import ExperimentConfig
     from src.retrieve.search import select_contexts
@@ -158,6 +185,44 @@ def test_select_contexts_honors_rerank_topn():
     cfg.rerank.enabled = True
     cfg.rerank.top_n = 3  # rerank on -> top_n governs how many reach the prompt
     assert len(select_contexts(hits, cfg)) == 3
+
+
+def test_summarize_counts_errors_and_excludes_them():
+    from src.eval.report import summarize
+    from src.eval.runner import EvalRun, QuestionResult
+
+    ks = (1, 5)
+    def m():
+        return ({f"recall@{k}": 0.0 for k in ks} | {f"precision@{k}": 0.0 for k in ks}
+                | {f"ndcg@{k}": 0.0 for k in ks} | {"mrr": 0.0})
+
+    ok = QuestionResult(id="q1", question="?", metrics=m(), retrieval_s=0.01, n_relevant=1,
+                        n_hits=5, generated=True, abstained=False, faithfulness=4, correctness=4)
+    err = QuestionResult(id="q2", question="?", metrics=m(), retrieval_s=0.01, n_relevant=1,
+                         n_hits=5, error="RuntimeError: boom")
+    run = EvalRun(config_name="x", ks=ks, generate=True, judge=True, results=[ok, err])
+
+    s = summarize(run)
+    assert s["n_errors"] == 1
+    assert s["generation"]["n_generated"] == 1  # the errored question is excluded
+    assert s["judge"]["n_judged"] == 1
+
+
+def test_comparison_markdown_and_dig():
+    from src.eval.report import _comparison_markdown, _dig
+
+    s_base = {"config": "baseline", "retrieval": {"recall@5": 0.794, "mrr": 0.616}}
+    s_tuned = {"config": "tuned", "retrieval": {"recall@5": 0.971, "mrr": 0.764}}
+
+    assert _dig(s_base, "retrieval.recall@5") == 0.794
+    assert _dig(s_base, "retrieval.nope") is None
+    assert _dig(s_base, "judge.mean_correctness") is None  # missing branch
+
+    md = _comparison_markdown([("baseline", s_base), ("tuned", s_tuned)])
+    assert "| metric | baseline | tuned |" in md
+    assert "recall@5" in md and "0.794" in md and "0.971" in md
+    # rows where every config lacks the metric are omitted
+    assert "faithfulness" not in md
 
 
 def test_gold_roundtrip(tmp_path):

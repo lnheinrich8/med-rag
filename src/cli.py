@@ -67,42 +67,29 @@ def init_db() -> None:
 def ingest(
     path: Optional[Path] = typer.Argument(None, help="File or dir of PDFs (default: data_dir)."),
     config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
+    force: bool = typer.Option(
+        False, "--force", help="Re-ingest even if content + pipeline config are unchanged."
+    ),
 ) -> None:
     """Parse → chunk → embed → upsert into Postgres. (Step 2)"""
     from rich.progress import track
 
     from .config import ExperimentConfig
-    from .db import connect
-    from .embed.embedder import Embedder
-    from .ingest.chunkers import chunk_document
-    from .ingest.loaders import load_corpus, load_pdf
-    from .store.pgvector_store import store_document
+    from .ingest.pipeline import ingest_corpus
 
     cfg = ExperimentConfig.from_yaml(config)
     target = path or settings.data_dir
-    docs = [load_pdf(target)] if target.is_file() else list(load_corpus(target))
-    if not docs:
+    if not (target.is_file() or any(target.rglob("*.pdf"))):
         console.print(f"[yellow]No PDFs found under[/] {target}")
         raise typer.Exit()
 
-    embedder = Embedder(cfg.embed)
-    stored = skipped = total_chunks = 0
-    with connect() as conn:
-        for doc in track(docs, description="Ingesting"):
-            chunks = chunk_document(doc, cfg.chunk)
-            vectors = embedder.embed_passages([c.content for c in chunks])
-            for c, v in zip(chunks, vectors):
-                c.embedding = v
-            if store_document(conn, doc, chunks):
-                stored += 1
-                total_chunks += len(chunks)
-            else:
-                skipped += 1
-        conn.commit()
-
+    r = ingest_corpus(
+        cfg, target=target, force=force,
+        progress=lambda docs: track(docs, description="Ingesting"),
+    )
     console.print(
-        f"[green]Ingested[/] {stored} document(s), {total_chunks} chunk(s); "
-        f"{skipped} unchanged/skipped."
+        f"[green]Ingested[/] {r['stored']} document(s), {r['total_chunks']} chunk(s); "
+        f"{r['skipped']} unchanged/skipped."
     )
 
 
@@ -273,6 +260,93 @@ def eval_(
     console.print(build_table(summary))
     json_path, md_path = save_report(run, summary, settings.reports_dir)
     console.print(f"[green]Saved[/] {json_path}\n[green]Saved[/] {md_path}")
+
+
+@app.command()
+def ablate(
+    configs: list[Path] = typer.Option(
+        ..., "--config", "-c", help="Configs to ingest+evaluate in order (repeat -c)."
+    ),
+    gold: Path = typer.Option(_DEFAULT_GOLD, "--gold", "-g", help="Gold JSONL path."),
+    no_generate: bool = typer.Option(False, "--no-generate", help="Retrieval metrics only."),
+    no_judge: bool = typer.Option(False, "--no-judge", help="Skip LLM-as-judge scoring."),
+    verified_only: bool = typer.Option(False, "--verified-only"),
+) -> None:
+    """Ingest + evaluate several configs in one run, then print a comparison. (Step 6)
+
+    Each config is re-ingested (chunking lives in the DB) and fully evaluated; the
+    DB is left in the state of the LAST config. A side-by-side comparison table and
+    a markdown report are written under reports/.
+    """
+    from rich.progress import Progress, SpinnerColumn, TextColumn, track
+
+    from .config import ExperimentConfig
+    from .eval.dataset import load_gold
+    from .eval.report import build_table, compare_table, save_comparison, save_report, summarize
+    from .eval.runner import run_eval
+    from .ingest.pipeline import ingest_corpus
+
+    if not gold.exists():
+        console.print(f"[red]Gold set not found:[/] {gold}")
+        raise typer.Exit(1)
+    questions = load_gold(gold, verified_only=verified_only)
+    if not questions:
+        console.print(f"[yellow]No questions in[/] {gold}.")
+        raise typer.Exit(1)
+
+    generate = not no_generate
+    judge = generate and not no_judge
+    items: list[tuple[str, dict]] = []
+
+    for config in configs:
+        cfg = ExperimentConfig.from_yaml(config)
+        console.rule(f"[bold]{cfg.name}[/]")
+
+        console.print(f"Re-ingesting for [cyan]{cfg.name}[/] (chunk={cfg.chunk.chunk_size}…)")
+        r = ingest_corpus(cfg, progress=lambda docs: track(docs, description="Ingesting"))
+        console.print(f"  {r['stored']} stored, {r['skipped']} unchanged, {r['total_chunks']} chunks")
+
+        console.print(f"Evaluating {len(questions)} question(s) (generate={generate}, judge={judge})…")
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            TextColumn("{task.completed}/{task.total}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Running", total=len(questions))
+            run = run_eval(
+                questions, cfg, generate=generate, judge=judge,
+                on_result=lambda _r: progress.advance(task),
+            )
+        summary = summarize(run)
+        console.print(build_table(summary))
+        save_report(run, summary, settings.reports_dir)
+        items.append((cfg.name, summary))
+
+    if len(items) > 1:
+        console.rule("[bold]comparison[/]")
+        console.print(compare_table(items))
+        path = save_comparison(items, settings.reports_dir)
+        console.print(f"[green]Saved[/] {path}")
+
+
+@app.command("report-compare")
+def report_compare(
+    reports: list[Path] = typer.Argument(..., help="Saved eval report JSON files to compare."),
+) -> None:
+    """Print a side-by-side comparison of already-saved eval reports."""
+    import json
+
+    from .eval.report import compare_table, save_comparison
+
+    items: list[tuple[str, dict]] = []
+    for p in reports:
+        data = json.loads(Path(p).read_text())
+        items.append((data["summary"]["config"], data["summary"]))
+    console.print(compare_table(items))
+    if len(items) > 1:
+        path = save_comparison(items, settings.reports_dir)
+        console.print(f"[green]Saved[/] {path}")
 
 
 @app.command()

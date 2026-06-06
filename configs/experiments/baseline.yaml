@@ -1,0 +1,37 @@
+# The naive baseline: "tutorial RAG" before any of the eval-driven tuning.
+#   - 512-token recursive chunks
+#   - NO boilerplate cleaning
+#   - dense retrieval only, no reranking
+# This is the honest starting point Step 6 compares the `tuned` pipeline against.
+name: baseline
+
+chunk:
+  strategy: recursive
+  chunk_size: 512
+  chunk_overlap: 64
+  clean_boilerplate: false
+
+embed:
+  model: BAAI/bge-base-en-v1.5
+  dim: 768
+  normalize: true
+
+retrieval:
+  mode: dense
+  top_k: 20
+  rrf_k: 60
+
+rerank:
+  enabled: false
+  model: BAAI/bge-reranker-base
+  top_n: 5
+
+generation:
+  model: medrag-qwen
+  ollama_host: http://localhost:11434
+  n_ctx: 4096
+  max_tokens: 512
+  temperature: 0.1
+  top_p: 0.9
+  context_chunks: 5
+  keep_alive: 5m

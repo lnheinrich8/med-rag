@@ -42,9 +42,11 @@ def summarize(run: EvalRun) -> dict:
     metric_keys += ["mrr"]
     retrieval = {key: _mean([r.metrics[key] for r in results]) for key in metric_keys}
 
+    n_errors = sum(1 for r in results if r.error)
     summary: dict = {
         "config": run.config_name,
         "n_questions": n,
+        "n_errors": n_errors,
         "ks": list(run.ks),
         "retrieval": retrieval,
         "latency": {
@@ -91,6 +93,10 @@ def build_table(summary: dict) -> Table:
 
     for key, val in summary["retrieval"].items():
         table.add_row(key, f"{val:.3f}")
+
+    if summary.get("n_errors"):
+        table.add_section()
+        table.add_row("[red]errored questions[/]", f"[red]{summary['n_errors']}[/]")
 
     lat = summary["latency"]
     table.add_section()
@@ -166,6 +172,118 @@ def _to_markdown(summary: dict) -> str:
             f"> {j['note']}",
         ]
     return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------- #
+# Cross-config comparison (Step 6: baseline vs tuned, ablation matrices)
+# --------------------------------------------------------------------------- #
+
+
+def _f3(v: float) -> str:
+    return f"{v:.3f}"
+
+
+def _f2(v: float) -> str:
+    return f"{v:.2f}"
+
+
+def _f1(v: float) -> str:
+    return f"{v:.1f}"
+
+
+def _f0(v: float) -> str:
+    return f"{v:.0f}"
+
+
+def _pct(v: float) -> str:
+    return f"{v:.1%}"
+
+
+# (summary key path, display label, formatter, "up"=higher-is-better)
+_COMPARE_ROWS = [
+    ("retrieval.recall@1", "recall@1", _f3, "up"),
+    ("retrieval.recall@5", "recall@5", _f3, "up"),
+    ("retrieval.recall@20", "recall@20", _f3, "up"),
+    ("retrieval.mrr", "MRR", _f3, "up"),
+    ("retrieval.ndcg@5", "nDCG@5", _f3, "up"),
+    ("generation.abstention_rate", "abstention", _pct, "down"),
+    ("judge.mean_faithfulness", "faithfulness (1-5)", _f2, "up"),
+    ("judge.mean_correctness", "correctness (1-5)", _f2, "up"),
+    ("generation.mean_citations", "citations/answer", _f2, "up"),
+    ("latency.retrieval_ms_p50", "retrieval p50 (ms)", _f0, "down"),
+    ("latency.generation_s_p50", "generation p50 (s)", _f1, "down"),
+]
+
+
+def _dig(summary: dict, dotted: str):
+    """Fetch a nested value by 'a.b' path; None if absent."""
+    node = summary
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _delta_cell(fmt, first: float, last: float) -> str:
+    """Signed delta string in the same units as the metric (pp for percentages)."""
+    d = last - first
+    if fmt is _pct:
+        return f"{d * 100:+.1f}pp"
+    digits = {_f3: 3, _f2: 2, _f1: 1, _f0: 0}.get(fmt, 3)
+    return f"{d:+.{digits}f}"
+
+
+def compare_table(items: list[tuple[str, dict]]) -> Table:
+    """Side-by-side metric comparison across configs; +Δ column when exactly two."""
+    table = Table(title="comparison", show_header=True, title_justify="left")
+    table.add_column("metric")
+    for name, _ in items:
+        table.add_column(name, justify="right")
+    show_delta = len(items) == 2
+    if show_delta:
+        table.add_column("Δ", justify="right")
+
+    for path, label, fmt, direction in _COMPARE_ROWS:
+        vals = [_dig(s, path) for _, s in items]
+        if all(v is None for v in vals):
+            continue
+        cells = [fmt(v) if v is not None else "—" for v in vals]
+        if show_delta and vals[0] is not None and vals[1] is not None:
+            improved = (vals[1] > vals[0]) == (direction == "up")
+            same = vals[1] == vals[0]
+            color = "dim" if same else ("green" if improved else "red")
+            cells.append(f"[{color}]{_delta_cell(fmt, vals[0], vals[1])}[/]")
+        elif show_delta:
+            cells.append("—")
+        table.add_row(label, *cells)
+    return table
+
+
+def _comparison_markdown(items: list[tuple[str, dict]]) -> str:
+    names = [name for name, _ in items]
+    head = "| metric | " + " | ".join(names) + " |"
+    sep = "| --- " + "| ---: " * len(names) + "|"
+    lines = ["# eval comparison", "", head, sep]
+    for path, label, fmt, _ in _COMPARE_ROWS:
+        vals = [_dig(s, path) for _, s in items]
+        if all(v is None for v in vals):
+            continue
+        cells = [fmt(v) if v is not None else "—" for v in vals]
+        lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def save_comparison(
+    items: list[tuple[str, dict]], reports_dir: Path, stamp: str | None = None
+) -> Path:
+    """Write a Markdown side-by-side comparison of several config summaries."""
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    stamp = stamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+    names = "_vs_".join(name for name, _ in items)
+    path = reports_dir / f"compare_{names}_{stamp}.md"
+    path.write_text(_comparison_markdown(items), encoding="utf-8")
+    return path
 
 
 def save_report(

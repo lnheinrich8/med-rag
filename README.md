@@ -58,6 +58,8 @@ rag search "..."            # Step 2
 rag query  "..."            # Step 3
 rag eval-gen -n 50          # Step 4: draft a gold Q&A set for hand-verification
 rag eval                    # Step 4: score retrieval + generation, write a report
+rag ablate -c a.yaml -c b.yaml   # Step 6: ingest+eval several configs, compare
+rag report-compare r1.json r2.json   # diff saved reports side by side
 ```
 
 ### Evaluation (Step 4)
@@ -104,5 +106,5 @@ src/
 - [x] **Step 2 — Ingest + dense search:** loaders, chunkers, embedder, store, `rag ingest`/`search`
 - [x] **Step 3 — Local LLM + cited answers:** prompt, llama.cpp wrapper, RAG pipeline, `rag query`
 - [x] **Step 4 — Eval harness + gold set:** metrics, gold drafting/loading, LLM-as-judge, runner, report, `rag eval`/`eval-gen` (gold set pending hand-verification)
-- [ ] Step 5 — Hybrid + reranker
+- [x] **Step 5 — Hybrid + reranker + chunk cleanup:** sparse FTS, RRF hybrid, cross-encoder rerank, boilerplate stripping, chunk-size/section ablations (256-token chunks won: recall@20 0.882→0.971)
 - [ ] Step 6 — Ablations + report

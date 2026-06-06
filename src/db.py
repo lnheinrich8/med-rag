@@ -6,8 +6,6 @@ to the ``vector`` type transparently.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import psycopg
 from pgvector.psycopg import register_vector
 

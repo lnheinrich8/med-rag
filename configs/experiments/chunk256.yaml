@@ -1,0 +1,38 @@
+# Ablation: smaller chunks (256 vs 512 tokens), dense retrieval.
+# Comparable to `default` (same dense/recursive/clean) but half the chunk size,
+# so a key sentence is a larger fraction of its chunk and less diluted by
+# neighbouring topics. Watch recall@20 vs default — that's the hard-miss ceiling.
+# NOTE: changing chunk_size requires a re-ingest with THIS config before evaluating
+#   (`rag ingest -c configs/experiments/chunk256.yaml` then `rag eval -c ...`).
+name: chunk256
+
+chunk:
+  strategy: recursive
+  chunk_size: 256
+  chunk_overlap: 32
+  clean_boilerplate: true
+
+embed:
+  model: BAAI/bge-base-en-v1.5
+  dim: 768
+  normalize: true
+
+retrieval:
+  mode: dense
+  top_k: 20
+  rrf_k: 60
+
+rerank:
+  enabled: false
+  model: BAAI/bge-reranker-base
+  top_n: 5
+
+generation:
+  model: medrag-qwen
+  ollama_host: http://localhost:11434
+  n_ctx: 4096
+  max_tokens: 512
+  temperature: 0.1
+  top_p: 0.9
+  context_chunks: 5
+  keep_alive: 5m
