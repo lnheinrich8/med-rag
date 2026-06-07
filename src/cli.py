@@ -126,22 +126,11 @@ def search(
     console.print(table)
 
 
-@app.command()
-def query(
-    question: str = typer.Argument(..., help="Question to answer with citations."),
-    config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
-    show_context: bool = typer.Option(
-        False, "--show-context", help="Also print the retrieved chunks."
-    ),
-) -> None:
-    """Full RAG: retrieve + generate a cited answer. (Step 3)"""
-    from .config import ExperimentConfig
-    from .generate.answer import answer_question
+def _render_answer(ans, show_context: bool) -> None:
+    """Print an Answer (panel + sources + optional context + latency footer).
 
-    cfg = ExperimentConfig.from_yaml(config)
-    with console.status("Retrieving + generating…"):
-        ans = answer_question(question, cfg)
-
+    Shared by `query` and `chat` so both render identically.
+    """
     console.print(Panel(ans.text, title="Answer", title_align="left", border_style="green"))
 
     if ans.citations:
@@ -163,6 +152,89 @@ def query(
         f"[dim]retrieval {ans.retrieval_s * 1000:.0f}ms · "
         f"generation {ans.generation_s:.1f}s · {ans.completion_tokens} tokens[/]"
     )
+
+
+@app.command()
+def query(
+    question: str = typer.Argument(..., help="Question to answer with citations."),
+    config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
+    show_context: bool = typer.Option(
+        False, "--show-context", help="Also print the retrieved chunks."
+    ),
+) -> None:
+    """Full RAG: retrieve + generate a cited answer. (Step 3)"""
+    from .config import ExperimentConfig
+    from .generate.answer import answer_question
+
+    cfg = ExperimentConfig.from_yaml(config)
+    with console.status("Retrieving + generating…"):
+        ans = answer_question(question, cfg)
+    _render_answer(ans, show_context)
+
+
+@app.command()
+def chat(
+    config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
+    show_context: bool = typer.Option(
+        False, "--show-context", help="Also print the retrieved chunks for each answer."
+    ),
+) -> None:
+    """Interactive RAG chat: ask question after question, no quoting needed.
+
+    Type a question and press Enter. Ctrl+C clears the current line; pressing
+    Ctrl+C again on an empty line (or Ctrl+D) exits.
+    """
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.key_binding import KeyBindings
+
+    from .config import ExperimentConfig
+    from .generate.answer import answer_question
+
+    cfg = ExperimentConfig.from_yaml(config)
+
+    # Ctrl+C clears a non-empty line; on an empty line it quits (like the Claude
+    # CLI). Overrides prompt_toolkit's default, which always aborts.
+    bindings = KeyBindings()
+
+    @bindings.add("c-c")
+    def _(event) -> None:
+        buf = event.app.current_buffer
+        if buf.text:
+            buf.reset()
+        else:
+            event.app.exit(exception=KeyboardInterrupt)
+
+    session: PromptSession = PromptSession(key_bindings=bindings, history=InMemoryHistory())
+
+    console.print(
+        Panel(
+            f"Ask anything about the corpus — just type and press Enter.\n"
+            f"[dim]config: {cfg.name} · Ctrl+C clears the line, Ctrl+C again (empty) quits.\n"
+            f"The first answer is slow while the models load.[/]",
+            title="med-rag chat",
+            title_align="left",
+            border_style="cyan",
+        )
+    )
+
+    while True:
+        try:
+            question = session.prompt(HTML("\n<b><ansigreen>you</ansigreen></b> › ")).strip()
+        except (KeyboardInterrupt, EOFError):
+            break
+        if not question:
+            continue
+        try:
+            with console.status("Thinking…"):
+                ans = answer_question(question, cfg)
+        except Exception as exc:  # noqa: BLE001 - keep the session alive on any failure
+            console.print(f"[red]Error:[/] {exc}")
+            continue
+        _render_answer(ans, show_context)
+
+    console.print("\n[dim]Bye.[/]")
 
 
 _DEFAULT_GOLD = Path("data/gold/diabetes_qa.jsonl")
