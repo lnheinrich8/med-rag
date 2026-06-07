@@ -47,6 +47,21 @@ ollama create medrag-qwen -f Modelfile
 ollama list                 # should show medrag-qwen
 ```
 
+### Project assets (not in the repo)
+
+Three things are gitignored (secrets, large weights, copyrighted PDFs), so a
+fresh clone must supply them before the pipeline will run:
+
+| Asset | How to provide it |
+| ----- | ----------------- |
+| `.env` | `cp .env.example .env`, then adjust `MEDRAG_DATABASE_URL` / `MEDRAG_DEVICE` |
+| LLM weights | Download a Qwen2.5-7B-Instruct **Q4_K_M** GGUF into `models/`, then `ollama create medrag-qwen -f Modelfile` (the `Modelfile` expects `./models/Qwen2.5-7B-Instruct-Q4_K_M.gguf`) |
+| Corpus PDFs | Drop PDFs under `data/raw/`, then `rag ingest` — see [Adding source data](#adding-source-data) |
+
+Already tracked, so no action needed: the `Modelfile`, `.env.example`, and the
+hand-verified gold set (`data/gold/diabetes_qa.jsonl`). Reports are generated
+into `reports/` by `rag eval`.
+
 ## CLI
 
 ```bash
@@ -78,6 +93,45 @@ rag chat --show-context               # also print the chunks behind each answer
 
 Ctrl+C clears the current line; pressing Ctrl+C again on an empty line (or Ctrl+D)
 exits.
+
+## Adding source data
+
+The corpus PDFs ship outside the repo, so you bring your own — either the
+diabetes sources this project was built on (ADA Standards of Care, StatPearls,
+PMC open-access reviews) or any other medical PDFs.
+
+```bash
+# 1. Drop PDFs anywhere under data/raw/. Discovery is recursive, so the
+#    guidelines/ reviews/ statpearls/ buckets are just for your own organization
+#    — a flat data/raw/*.pdf works too.
+cp ~/Downloads/*.pdf data/raw/reviews/
+
+# 2. Ingest. No path → everything under data/raw/; or pass a file/dir for a subset.
+rag ingest                       # parse → clean → chunk → embed → upsert
+rag ingest data/raw/reviews      # ingest just one folder
+
+# 3. Verify it landed.
+rag info                         # document / chunk counts
+rag search "metformin mechanism" # eyeball the top chunks
+```
+
+Ingest is **idempotent**: re-running only embeds new or changed PDFs, so you can
+add sources incrementally. Use `rag ingest --force` to re-ingest unchanged files
+(e.g. after changing chunk size or the embedding model in a config).
+
+### Using non-diabetes / other medical sources
+
+Any PDF ingests and becomes searchable, but three things are tuned to the
+original diabetes corpus and are worth adjusting for a different domain:
+
+- **Boilerplate cleaning** — `src/ingest/clean.py` strips NCBI/StatPearls/ADA
+  page headers and footers. Unknown sources still ingest; their specific
+  boilerplate just isn't removed. Add regexes to `_PATTERNS` to handle new ones.
+- **System prompt** — `src/generate/prompt.py` scopes answers to type 2
+  diabetes. Broaden `SYSTEM_PROMPT` for other topics.
+- **Gold set / eval** — `data/gold/diabetes_qa.jsonl` is diabetes-specific.
+  Regenerate a fresh draft for a new corpus with `rag eval-gen`, then
+  hand-verify it (see Evaluation below).
 
 ### Evaluation (Step 4)
 
