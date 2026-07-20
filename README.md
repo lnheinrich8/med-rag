@@ -80,8 +80,8 @@ rag report-compare r1.json r2.json   # diff saved reports side by side
 
 ### Chat
 
-`rag chat` opens an interactive session — type a question (no quotes, no command
-prefix) and press Enter to get a cited answer, then ask the next one. The
+`rag chat` opens an interactive session — type a question (no quotes needed)
+and press Enter to get a cited answer, then ask the next one. The
 embedding/rerank/LLM models stay warm across turns, so only the first answer pays
 the load cost.
 
@@ -90,6 +90,15 @@ rag chat                              # uses configs/default.yaml
 rag chat -c configs/experiments/tuned.yaml   # run under a specific pipeline
 rag chat --show-context               # also print the chunks behind each answer
 ```
+
+Answers cite inline `[n]` markers; the source table itself is on demand via
+slash commands. Start a line with `/` and a completion menu lists the matching
+commands as you type (unique prefixes dispatch too, e.g. `/so`):
+
+| command | effect |
+| ------- | ------ |
+| `/sources` | show the sources cited by the last answer |
+| `/clear` | clear the screen and forget the last answer |
 
 Ctrl+C clears the current line; pressing Ctrl+C again on an empty line (or Ctrl+D)
 exits.
@@ -179,7 +188,7 @@ src/
 - [x] **Step 4 — Eval harness + gold set:** metrics, gold drafting/loading, LLM-as-judge, runner, report, `rag eval`/`eval-gen` (gold set pending hand-verification)
 - [x] **Step 5 — Hybrid + reranker + chunk cleanup:** sparse FTS, RRF hybrid, cross-encoder rerank, boilerplate stripping, chunk-size/section ablations (256-token chunks won: recall@20 0.882→0.971)
 - [x] **Step 6 — Ablations + report:** one-command `rag ablate` (ingest+eval+compare), cross-config comparison reports. Headline **baseline → tuned** (naive 512-token dense vs 256-token hybrid+rerank): recall@5 0.79→0.97, MRR 0.62→0.76, abstentions 5.9%→2.9%, faithfulness 4.53→4.73, correctness 4.09→4.36 — and faster end-to-end (generation 2.6s→1.9s p50).
-- [x] **Interactive chat:** `rag chat` REPL over the same RAG pipeline, with models kept warm across turns.
+- [x] **Interactive chat:** `rag chat` REPL over the same RAG pipeline, with models kept warm across turns and slash commands (`/sources`, `/clear`) behind a completion menu.
 
 ### Headline result
 
