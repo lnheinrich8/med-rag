@@ -126,22 +126,28 @@ def search(
     console.print(table)
 
 
-def _render_answer(ans, show_context: bool) -> None:
+def _render_sources(citations) -> None:
+    """Sources table for an answer; states plainly when nothing was cited."""
+    if not citations:
+        console.print("[yellow]No sources cited.[/]")
+        return
+    table = Table(title="Sources", show_header=True, title_justify="left")
+    table.add_column("[n]", justify="right", style="cyan", no_wrap=True)
+    table.add_column("source")
+    for c in citations:
+        table.add_row(f"[{c.marker}]", c.label())
+    console.print(table)
+
+
+def _render_answer(ans, show_context: bool, show_sources: bool = True) -> None:
     """Print an Answer (panel + sources + optional context + latency footer).
 
-    Shared by `query` and `chat` so both render identically.
+    Shared by `query` and `chat`. Chat suppresses the sources table — there
+    it's on demand via /sources — while one-shot `query` keeps it inline.
     """
     console.print(Panel(ans.text, title="Answer", title_align="left", border_style="green"))
-
-    if ans.citations:
-        table = Table(title="Sources", show_header=True, title_justify="left")
-        table.add_column("[n]", justify="right", style="cyan", no_wrap=True)
-        table.add_column("source")
-        for c in ans.citations:
-            table.add_row(f"[{c.marker}]", c.label())
-        console.print(table)
-    else:
-        console.print("[yellow]No sources cited.[/]")
+    if show_sources:
+        _render_sources(ans.citations)
 
     if show_context:
         for i, h in enumerate(ans.contexts, 1):
@@ -172,6 +178,52 @@ def query(
     _render_answer(ans, show_context)
 
 
+# Slash commands available inside `rag chat`. The registry is the single
+# source of truth for both the completion menu and dispatch.
+_CHAT_COMMANDS = {
+    "/sources": "Show the sources cited by the last answer",
+    "/clear": "Clear the screen and forget the last answer",
+}
+
+
+def _slash_matches(text: str) -> list[tuple[str, str]]:
+    """Chat commands matching a partially typed command.
+
+    Matches only while the line is nothing but a leading slash-token, so the
+    menu appears for `/so` but never for `/sources x` or mid-sentence slashes.
+    """
+    if not text.startswith("/") or " " in text:
+        return []
+    return [(name, help_) for name, help_ in _CHAT_COMMANDS.items() if name.startswith(text)]
+
+
+def _run_chat_command(raw: str, last_ans, on_clear=None):
+    """Execute a /command typed in chat; returns the (possibly reset) last_ans.
+
+    Unique prefixes dispatch too (`/so`, `/c`). `on_clear` is called after
+    /clear wipes the screen, so the chat loop can repaint its banner.
+    """
+    token = raw.split()[0]
+    matches = [token] if token in _CHAT_COMMANDS else [n for n, _ in _slash_matches(token)]
+    if len(matches) != 1:
+        console.print(f"[red]Unknown command:[/] {token}. Available:")
+        for name, help_ in _CHAT_COMMANDS.items():
+            console.print(f"  [cyan]{name}[/] — {help_}")
+        return last_ans
+    if matches[0] == "/sources":
+        if last_ans is None:
+            console.print("[yellow]No answer yet — ask a question first.[/]")
+        else:
+            _render_sources(last_ans.citations)
+        return last_ans
+    if matches[0] == "/clear":
+        console.clear()
+        if on_clear is not None:
+            on_clear()
+        return None
+    return last_ans
+
+
 @app.command()
 def chat(
     config: Path = typer.Option("configs/default.yaml", "--config", "-c"),
@@ -181,10 +233,13 @@ def chat(
 ) -> None:
     """Interactive RAG chat: ask question after question, no quoting needed.
 
-    Type a question and press Enter. Ctrl+C clears the current line; pressing
-    Ctrl+C again on an empty line (or Ctrl+D) exits.
+    Type a question and press Enter. A leading `/` runs a chat command
+    (`/sources` re-shows the last answer's sources) with a completion menu as
+    you type. Ctrl+C clears the current line; pressing Ctrl+C again on an
+    empty line (or Ctrl+D) exits.
     """
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import Completer, Completion
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.key_binding import KeyBindings
@@ -206,19 +261,37 @@ def chat(
         else:
             event.app.exit(exception=KeyboardInterrupt)
 
-    session: PromptSession = PromptSession(key_bindings=bindings, history=InMemoryHistory())
+    class SlashCompleter(Completer):
+        """Pop up matching /commands while the line is just a command token."""
 
-    console.print(
-        Panel(
-            f"Ask anything about the corpus — just type and press Enter.\n"
-            f"[dim]config: {cfg.name} · Ctrl+C clears the line, Ctrl+C again (empty) quits.\n"
-            f"The first answer is slow while the models load.[/]",
-            title="med-rag chat",
-            title_align="left",
-            border_style="cyan",
-        )
+        def get_completions(self, document, complete_event):
+            text = document.text_before_cursor
+            for name, help_ in _slash_matches(text):
+                yield Completion(name, start_position=-len(text), display_meta=help_)
+
+    session: PromptSession = PromptSession(
+        key_bindings=bindings,
+        history=InMemoryHistory(),
+        completer=SlashCompleter(),
+        complete_while_typing=True,
     )
 
+    def banner() -> None:
+        console.print(
+            Panel(
+                f"Ask anything about the corpus — just type and press Enter.\n"
+                f"[dim]config: {cfg.name} · / for commands · "
+                f"Ctrl+C clears the line, Ctrl+C again (empty) quits.\n"
+                f"The first answer is slow while the models load.[/]",
+                title="med-rag chat",
+                title_align="left",
+                border_style="cyan",
+            )
+        )
+
+    banner()
+
+    last_ans = None
     while True:
         try:
             question = session.prompt(HTML("\n<b><ansigreen>you</ansigreen></b> › ")).strip()
@@ -226,13 +299,17 @@ def chat(
             break
         if not question:
             continue
+        if question.startswith("/"):
+            last_ans = _run_chat_command(question, last_ans, on_clear=banner)
+            continue
         try:
             with console.status("Thinking…"):
                 ans = answer_question(question, cfg)
         except Exception as exc:  # noqa: BLE001 - keep the session alive on any failure
             console.print(f"[red]Error:[/] {exc}")
             continue
-        _render_answer(ans, show_context)
+        last_ans = ans
+        _render_answer(ans, show_context, show_sources=False)
 
     console.print("\n[dim]Bye.[/]")
 
